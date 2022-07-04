@@ -24,9 +24,41 @@ namespace Simple {
             }
 
         private:
+            void Respond()
+            {
+                std::time_t now = std::time(0);
+                std::string time = std::ctime(&now);
+                std::ostringstream sstr;
+                sstr << "HTTP/1.0 200 OK\r\n" <<
+                "Content-Type: text/html; charset=UTF-8\r\n" <<
+                "Content-Length: " << time.length() + 2 << "\r\n\r\n" <<
+                time << "\r\n";
+
+                Respond(sstr.str()); 
+            }
+
+            void Respond(const std::string& respondData)
+            {
+                auto self(shared_from_this());
+                m_Socket.async_write_some(asio::buffer(respondData.data(), respondData.size()), 
+                    [this, self] (const asio::error_code& ec, size_t bytesTransfered)
+                    {
+                        if(!ec)
+                        {
+                            m_Socket.shutdown(asio::ip::tcp::socket::shutdown_both);
+                        }
+                        else
+                        {
+                            m_Socket.close();
+                        }
+                    }
+                );
+            }
+
             void ReadBody()
             {
-
+                auto self(shared_from_this());
+                Respond();
             }
 
             void ReadHeader()
@@ -38,10 +70,9 @@ namespace Simple {
                         std::ostringstream ss;
                         ss << &m_RequestBuffer;
                         std::cout << "Request header:\n" << ss.str();
+                        ReadBody();
                         if (ec)
-                        {
                             m_Socket.close();
-                        }
                     }
                 );
             }
@@ -60,6 +91,11 @@ namespace Simple {
         {
         }
 
+        ~HttpServer()
+        {
+            if (m_ContextThread->joinable())
+                m_ContextThread->join();
+        }
         void Start()
         {
             m_ContextThread = std::make_shared<std::thread>(
@@ -77,10 +113,11 @@ namespace Simple {
             m_Acceptor.async_accept(
                 [this] (const asio::error_code& ec, asio::ip::tcp::socket socket)
                 {
+                    if (!m_Acceptor.is_open())
+                        return;
+
                     if(!ec)
-                    {
                         std::make_shared<Details::RequestSession>(std::move(socket))->Start();
-                    }
                     DoAccept();
                 }
             );
