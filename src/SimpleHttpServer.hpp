@@ -41,6 +41,11 @@ namespace Simple {
             headers["Content-Type"] = value;
         }
 
+        void SetAccessControlAllowOrigin(const std::string& value)
+        {
+            headers["Access-Control-Allow-Origin"] = value;
+        }
+
         uint16_t status = 200;
         std::string version;
         std::string body;
@@ -587,36 +592,35 @@ namespace Simple {
             }
 
         private:
+            void MatchRequest(const std::vector<Handler>& handlers, const Request& req, Response& respond, bool& anyMatch)
+            {
+                for (auto& handler : handlers)
+                    if (handler.first == req.path)
+                    {
+                        handler.second(req, respond);
+                        anyMatch = true;
+                    }
+            }
+
             void Respond(Request req)
             {
                 Response respond;
                 
+                bool anyMatch = false;
                 if (req.method == "GET")
-                {
-                    for (auto& handler : m_Server->m_GetHandlers)
-                            if (handler.first == req.path)
-                                handler.second(req, respond);
-                }
+                    MatchRequest(m_Server->m_GetHandlers, req, respond, anyMatch);
                 else if (req.method == "POST")
-                {
-                    for (auto& handler : m_Server->m_PostHandlers)
-                        if (handler.first == req.path)
-                            handler.second(req, respond);
-                }
+                    MatchRequest(m_Server->m_PostHandlers, req, respond, anyMatch);
                 else if (req.method == "PUT")
-                {
-                    for (auto& handler : m_Server->m_PutHandlers)
-                        if (handler.first == req.path)
-                            handler.second(req, respond);
-                }
+                    MatchRequest(m_Server->m_PutHandlers, req, respond, anyMatch);
                 else if (req.method == "DELETE")
+                    MatchRequest(m_Server->m_DeleteHandlers, req, respond, anyMatch);
+                
+                if (!anyMatch)
                 {
-                    for (auto& handler : m_Server->m_DeleteHandlers)
-                        if (handler.first == req.path)
-                            handler.second(req, respond);
+                    m_Socket.shutdown(asio::ip::tcp::socket::shutdown_both);
+                    return;
                 }
-                else
-                    m_Socket.close();
 
                 respond.headers["Content-Type"] += "; charset=UTF-8";
                 respond.headers["Content-Length"] = std::to_string(respond.body.size());    
@@ -672,8 +676,6 @@ namespace Simple {
                         if (!ec)
                         {
                             req.body.append(reinterpret_cast<char const*>(bodyBuffer.data()), bytesTransfered);
-                            // std::cout << req.body;
-
 
                             Respond(std::move(req));
                         }
