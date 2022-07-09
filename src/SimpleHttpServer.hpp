@@ -1,26 +1,18 @@
 #pragma once
 
+#include <unordered_map>
+#include <functional>
 #include <memory>
 #include <thread>
 #include <sstream>
 #include <iostream>
 #include <vector>
+#include <iomanip>
 
 #include <asio.hpp>
 
 namespace Simple {
-    struct Header
-    {
-        std::string name;
-        std::string value;
-    };
-
-    struct Params
-    {
-        std::string name;
-        std::string value;
-    };
-
+    namespace Details { class RequestSession; }
     struct Request
     {
         std::string method;
@@ -32,12 +24,133 @@ namespace Simple {
         int versionMajor;
         int versionMinor;
         uint32_t contentLength;
-        std::vector<Header> headers;
-        std::vector<Params> params;
+        std::vector<std::pair<std::string, std::string>> headers;
+        std::vector<std::pair<std::string, std::string>> params;
+    };
+
+    struct Response
+    {
+        Response()
+        {
+            headers["Content-Type"] = "text/plain";
+            headers["Content-Length"] = "0";
+        };
+
+        void SetContentType(const std::string& value)
+        {
+            headers["Content-Type"] = value;
+        }
+
+        uint16_t status = 200;
+        std::string version;
+        std::string body;
+        std::string location; // Redirect location>
+        std::unordered_map<std::string, std::string> headers;
+    };
+
+    typedef std::function<void(const Request&, Response&)> CallbackHandler;
+    typedef std::pair<std::string, CallbackHandler> Handler;
+
+    class HttpServer
+    {
+    public:
+        HttpServer(const std::string& address, uint_least16_t port);
+        ~HttpServer();
+        void Start();
+        void Get(const std::string& pathPattern, CallbackHandler requestHandler);
+        void Post(const std::string& pathPattern, CallbackHandler requestHandler);
+        void Put(const std::string& pathPattern, CallbackHandler requestHandler);
+        void Delete(const std::string& pathPattern, CallbackHandler requestHandler);
+
+
+    private:
+        void DoAccept();
+
+    private:
+        asio::io_context m_IoContext;
+        asio::ip::tcp::acceptor m_Acceptor;
+
+        std::vector<Handler> m_GetHandlers;
+        std::vector<Handler> m_PostHandlers;
+        std::vector<Handler> m_PutHandlers;
+        std::vector<Handler> m_DeleteHandlers;
+        std::shared_ptr<std::thread> m_ContextThread;
+
+        friend class Details::RequestSession;
     };
 
     namespace Details
     {
+        inline const char* StatusMessage(uint16_t status) {
+            switch (status) {
+            case 100: return "Continue";
+            case 101: return "Switching Protocol";
+            case 102: return "Processing";
+            case 103: return "Early Hints";
+            case 200: return "OK";
+            case 201: return "Created";
+            case 202: return "Accepted";
+            case 203: return "Non-Authoritative Information";
+            case 204: return "No Content";
+            case 205: return "Reset Content";
+            case 206: return "Partial Content";
+            case 207: return "Multi-Status";
+            case 208: return "Already Reported";
+            case 226: return "IM Used";
+            case 300: return "Multiple Choice";
+            case 301: return "Moved Permanently";
+            case 302: return "Found";
+            case 303: return "See Other";
+            case 304: return "Not Modified";
+            case 305: return "Use Proxy";
+            case 306: return "unused";
+            case 307: return "Temporary Redirect";
+            case 308: return "Permanent Redirect";
+            case 400: return "Bad Request";
+            case 401: return "Unauthorized";
+            case 402: return "Payment Required";
+            case 403: return "Forbidden";
+            case 404: return "Not Found";
+            case 405: return "Method Not Allowed";
+            case 406: return "Not Acceptable";
+            case 407: return "Proxy Authentication Required";
+            case 408: return "Request Timeout";
+            case 409: return "Conflict";
+            case 410: return "Gone";
+            case 411: return "Length Required";
+            case 412: return "Precondition Failed";
+            case 413: return "Payload Too Large";
+            case 414: return "URI Too Long";
+            case 415: return "Unsupported Media Type";
+            case 416: return "Range Not Satisfiable";
+            case 417: return "Expectation Failed";
+            case 418: return "I'm a teapot";
+            case 421: return "Misdirected Request";
+            case 422: return "Unprocessable Entity";
+            case 423: return "Locked";
+            case 424: return "Failed Dependency";
+            case 425: return "Too Early";
+            case 426: return "Upgrade Required";
+            case 428: return "Precondition Required";
+            case 429: return "Too Many Requests";
+            case 431: return "Request Header Fields Too Large";
+            case 451: return "Unavailable For Legal Reasons";
+            case 501: return "Not Implemented";
+            case 502: return "Bad Gateway";
+            case 503: return "Service Unavailable";
+            case 504: return "Gateway Timeout";
+            case 505: return "HTTP Version Not Supported";
+            case 506: return "Variant Also Negotiates";
+            case 507: return "Insufficient Storage";
+            case 508: return "Loop Detected";
+            case 510: return "Not Extended";
+            case 511: return "Network Authentication Required";
+
+            default:
+            case 500: return "Internal Server Error";
+            }
+        }
+
         constexpr auto END_TOKEN = "\r\n\r\n"; 
         // Check if a byte is an HTTP character.
         inline bool IsChar(int c)
@@ -72,9 +185,9 @@ namespace Simple {
             return c >= '0' && c <= '9';
         }
 
-        inline bool CheckIfConnection(const Header &item)
+        inline bool CheckIfConnection(const std::pair<std::string, std::string>& item)
         {
-            return strcasecmp(item.name.c_str(), "Connection") == 0;
+            return strcasecmp(item.first.c_str(), "Connection") == 0;
         }
 
         // The current state of the parser.
@@ -127,7 +240,7 @@ namespace Simple {
             ParsingError
         };
 
-        ParseResult ParseRequest(const std::string& requestData, Request& req)
+        inline ParseResult ParseRequest(const std::string& requestData, Request& req)
         {
             // Parser from https://github.com/nekipelov/httpparser
 
@@ -323,10 +436,10 @@ namespace Simple {
                     }
                     else
                     {
-                        req.headers.push_back(Header());
-                        req.headers.back().name.reserve(16);
-                        req.headers.back().value.reserve(16);
-                        req.headers.back().name.push_back(input);
+                        req.headers.push_back({});
+                        req.headers.back().first.reserve(16);
+                        req.headers.back().second.reserve(16);
+                        req.headers.back().first.push_back(input);
                         state = HeaderName;
                     }
                     break;
@@ -345,7 +458,7 @@ namespace Simple {
                     else
                     {
                         state = HeaderValue;
-                        req.headers.back().value.push_back(input);
+                        req.headers.back().second.push_back(input);
                     }
                     break;
                 case HeaderName:
@@ -359,7 +472,7 @@ namespace Simple {
                     }
                     else
                     {
-                        req.headers.back().name.push_back(input);
+                        req.headers.back().first.push_back(input);
                     }
                     break;
                 case SpaceBeforeHeaderValue:
@@ -377,17 +490,17 @@ namespace Simple {
                     {
                         if( req.method == "POST" || req.method == "PUT" )
                         {
-                            Header &h = req.headers.back();
+                            auto &h = req.headers.back();
 
-                            if( strcasecmp(h.name.c_str(), "Content-Length") == 0 )
+                            if( strcasecmp(h.first.c_str(), "Content-Length") == 0 )
                             {
-                                contentSize = atoi(h.value.c_str());
+                                contentSize = atoi(h.second.c_str());
                                 req.body.reserve( contentSize );
                                 req.contentLength = contentSize;
                             }
-                            else if( strcasecmp(h.name.c_str(), "Transfer-Encoding") == 0 )
+                            else if( strcasecmp(h.first.c_str(), "Transfer-Encoding") == 0 )
                             {
-                                if(strcasecmp(h.value.c_str(), "chunked") == 0)
+                                if(strcasecmp(h.second.c_str(), "chunked") == 0)
                                     chunked = true;
                             }
                         }
@@ -399,7 +512,7 @@ namespace Simple {
                     }
                     else
                     {
-                        req.headers.back().value.push_back(input);
+                        req.headers.back().second.push_back(input);
                     }
                     break;
                 case ExpectingNewline_2:
@@ -413,13 +526,13 @@ namespace Simple {
                     }
                     break;
                 case ExpectingNewline_3: {
-                    std::vector<Header>::iterator it = std::find_if(req.headers.begin(),
+                    std::vector<std::pair<std::string, std::string>>::iterator it = std::find_if(req.headers.begin(),
                                                                         req.headers.end(),
                                                                         CheckIfConnection);
 
                     if( it != req.headers.end() )
                     {
-                        if( strcasecmp(it->value.c_str(), "Keep-Alive") == 0 )
+                        if( strcasecmp(it->second.c_str(), "Keep-Alive") == 0 )
                         {
                             // req.keepAlive = true;
                         }
@@ -464,28 +577,67 @@ namespace Simple {
         class RequestSession: public std::enable_shared_from_this<RequestSession>
         {
         public:
-            RequestSession(asio::ip::tcp::socket socket) :
-                m_Socket(std::move(socket))
+            RequestSession(asio::ip::tcp::socket socket, HttpServer* server) :
+                m_Socket(std::move(socket)), m_Server(server)
             {
             }
-
             void Start()
             {
                 ReadHeader();
             }
 
         private:
-            void Respond()
+            void Respond(Request req)
             {
-                std::time_t now = std::time(0);
-                std::string time = std::ctime(&now);
-                std::ostringstream sstr;
-                sstr << "HTTP/1.0 200 OK\r\n" <<
-                "Content-Type: text/html; charset=UTF-8\r\n" <<
-                "Content-Length: " << time.length() + 2 << "\r\n\r\n" <<
-                time << "\r\n";
+                Response respond;
+                
+                if (req.method == "GET")
+                {
+                    for (auto& handler : m_Server->m_GetHandlers)
+                            if (handler.first == req.path)
+                                handler.second(req, respond);
+                }
+                else if (req.method == "POST")
+                {
+                    for (auto& handler : m_Server->m_PostHandlers)
+                        if (handler.first == req.path)
+                            handler.second(req, respond);
+                }
+                else if (req.method == "PUT")
+                {
+                    for (auto& handler : m_Server->m_PutHandlers)
+                        if (handler.first == req.path)
+                            handler.second(req, respond);
+                }
+                else if (req.method == "DELETE")
+                {
+                    for (auto& handler : m_Server->m_DeleteHandlers)
+                        if (handler.first == req.path)
+                            handler.second(req, respond);
+                }
+                else
+                    m_Socket.close();
 
-                Respond(sstr.str()); 
+                respond.headers["Content-Type"] += "; charset=UTF-8";
+                respond.headers["Content-Length"] = std::to_string(respond.body.size());    
+                respond.headers["Connection"] = "close";
+                respond.headers["Server"] = "SimpleHttpServer";
+                if (!respond.location.empty()) respond.headers["Location"] = respond.location;
+                std::time_t now = std::time(0);
+                auto& date = respond.headers["Date"];
+                date.resize(30);
+                std::strftime((char *)date.c_str(), date.size(), "%a, %d %b %Y %T GMT", std::gmtime(&now));
+
+                std::ostringstream finalResponse;
+                finalResponse << "HTTP/1.1 " << respond.status << " " << Details::StatusMessage(respond.status) << "\r\n";
+                for (auto& [name, value] : respond.headers)
+                {
+                    finalResponse << name + ": " << value << "\r\n";
+                }
+                finalResponse << "\r\n" <<
+                respond.body;
+
+                Respond(finalResponse.str()); 
             }
 
             void Respond(const std::string& respondData)
@@ -510,7 +662,7 @@ namespace Simple {
             {
                 auto self(shared_from_this());
                 if (req.body.size() == req.contentLength)
-                    Respond();
+                    Respond(std::move(req));
 
                 bodyBuffer.clear(); 
                 bodyBuffer.resize(m_Socket.available());
@@ -520,8 +672,10 @@ namespace Simple {
                         if (!ec)
                         {
                             req.body.append(reinterpret_cast<char const*>(bodyBuffer.data()), bytesTransfered);
-                            std::cout << req.body;
-                            Respond();
+                            // std::cout << req.body;
+
+
+                            Respond(std::move(req));
                         }
                         else if (ec == asio::error::operation_aborted)
                             m_Socket.close();
@@ -532,7 +686,7 @@ namespace Simple {
             void ReadHeader()
             {
                 auto self(shared_from_this());
-                asio::async_read_until(m_Socket, m_RequestBuffer, END_TOKEN,
+                asio::async_read_until(m_Socket, m_RequestBuffer, Details::END_TOKEN,
                     [this, self] (const asio::error_code& ec, size_t bytesTransfered)
                     {
                         std::ostringstream ss;
@@ -556,56 +710,66 @@ namespace Simple {
             }
 
         private:
+            HttpServer* m_Server;
             asio::ip::tcp::socket m_Socket;
             asio::streambuf m_RequestBuffer;
             std::vector<uint8_t> bodyBuffer;
         };
     }
 
-    class HttpServer
+    HttpServer::HttpServer(const std::string& address, uint_least16_t port) :
+        m_Acceptor(m_IoContext, asio::ip::tcp::endpoint(asio::ip::address::from_string(address), port))
     {
-    public:
-        HttpServer(const std::string& address, uint_least16_t port) :
-            m_Acceptor(m_IoContext, asio::ip::tcp::endpoint(asio::ip::address::from_string(address), port))
-        {
-        }
+    }
 
-        ~HttpServer()
-        {
-            if (m_ContextThread->joinable())
-                m_ContextThread->join();
-        }
-        void Start()
-        {
-            m_ContextThread = std::make_shared<std::thread>(
-                [this] ()
-                {
-                    DoAccept();
-                    m_IoContext.run();
-                }
-            );
-        }
+    HttpServer::~HttpServer()
+    {
+        if (m_ContextThread->joinable())
+            m_ContextThread->join();
+    }
+    void HttpServer::Start()
+    {
+        m_ContextThread = std::make_shared<std::thread>(
+            [this] ()
+            {
+                DoAccept();
+                m_IoContext.run();
+            }
+        );
+    }
+    void HttpServer::Get(const std::string& pathPattern, CallbackHandler requestHandler)
+    {
+        m_GetHandlers.push_back({pathPattern, requestHandler});
+    }
 
-    private:
-        void DoAccept()
-        {
-            m_Acceptor.async_accept(
-                [this] (const asio::error_code& ec, asio::ip::tcp::socket socket)
-                {
-                    if (!m_Acceptor.is_open())
-                        return;
+    void HttpServer::Post(const std::string& pathPattern, CallbackHandler requestHandler)
+    {
+        m_PostHandlers.push_back({pathPattern, requestHandler});
+    }
 
-                    if(!ec)
-                        std::make_shared<Details::RequestSession>(std::move(socket))->Start();
+    void HttpServer::Put(const std::string& pathPattern, CallbackHandler requestHandler)
+    {
+        m_PutHandlers.push_back({pathPattern, requestHandler});
+    }
 
-                    DoAccept();
-                }
-            );
-        }
+    void HttpServer::Delete(const std::string& pathPattern, CallbackHandler requestHandler)
+    {
+        m_DeleteHandlers.push_back({pathPattern, requestHandler});
+    }
 
-    private:
-        asio::io_context m_IoContext;
-        asio::ip::tcp::acceptor m_Acceptor;
-        std::shared_ptr<std::thread> m_ContextThread;
-    };
+    void HttpServer::DoAccept()
+    {
+        m_Acceptor.async_accept(
+            [this] (const asio::error_code& ec, asio::ip::tcp::socket socket)
+            {
+                if (!m_Acceptor.is_open())
+                    return;
+
+                if(!ec)
+                    std::make_shared<Details::RequestSession>(std::move(socket), this)->Start();
+
+                DoAccept();
+            }
+        );
+    }
 }
