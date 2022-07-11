@@ -13,6 +13,8 @@
 
 namespace Simple {
     namespace Details { class RequestSession; }
+    typedef std::unordered_map<std::string, std::string> Headers;
+    typedef std::unordered_map<std::string, std::string> Params;
     struct Request
     {
         std::string method;
@@ -24,8 +26,8 @@ namespace Simple {
         int versionMajor;
         int versionMinor;
         uint32_t contentLength;
-        std::vector<std::pair<std::string, std::string>> headers;
-        std::vector<std::pair<std::string, std::string>> params;
+        Headers headers;
+        Params params;
     };
 
     struct Response
@@ -50,7 +52,7 @@ namespace Simple {
         std::string version;
         std::string body;
         std::string location; // Redirect location>
-        std::unordered_map<std::string, std::string> headers;
+        Headers headers;
     };
 
     typedef std::function<void(const Request&, Response&)> CallbackHandler;
@@ -248,7 +250,8 @@ namespace Simple {
         inline ParseResult ParseRequest(const std::string& requestData, Request& req)
         {
             // Parser from https://github.com/nekipelov/httpparser
-
+            std::vector<std::pair<std::string, std::string>> headers;
+            std::vector<std::pair<std::string, std::string>> params;
             State state = RequestMethodStart;
             bool chunked = false;
             size_t contentSize = 0;
@@ -441,10 +444,10 @@ namespace Simple {
                     }
                     else
                     {
-                        req.headers.push_back({});
-                        req.headers.back().first.reserve(16);
-                        req.headers.back().second.reserve(16);
-                        req.headers.back().first.push_back(input);
+                        headers.push_back({});
+                        headers.back().first.reserve(16);
+                        headers.back().second.reserve(16);
+                        headers.back().first.push_back(input);
                         state = HeaderName;
                     }
                     break;
@@ -463,7 +466,7 @@ namespace Simple {
                     else
                     {
                         state = HeaderValue;
-                        req.headers.back().second.push_back(input);
+                        headers.back().second.push_back(input);
                     }
                     break;
                 case HeaderName:
@@ -477,7 +480,7 @@ namespace Simple {
                     }
                     else
                     {
-                        req.headers.back().first.push_back(input);
+                        headers.back().first.push_back(input);
                     }
                     break;
                 case SpaceBeforeHeaderValue:
@@ -495,7 +498,7 @@ namespace Simple {
                     {
                         if( req.method == "POST" || req.method == "PUT" )
                         {
-                            auto &h = req.headers.back();
+                            auto &h = headers.back();
 
                             if( strcasecmp(h.first.c_str(), "Content-Length") == 0 )
                             {
@@ -517,7 +520,7 @@ namespace Simple {
                     }
                     else
                     {
-                        req.headers.back().second.push_back(input);
+                        headers.back().second.push_back(input);
                     }
                     break;
                 case ExpectingNewline_2:
@@ -531,11 +534,11 @@ namespace Simple {
                     }
                     break;
                 case ExpectingNewline_3: {
-                    std::vector<std::pair<std::string, std::string>>::iterator it = std::find_if(req.headers.begin(),
-                                                                        req.headers.end(),
+                    std::vector<std::pair<std::string, std::string>>::iterator it = std::find_if(headers.begin(),
+                                                                        headers.end(),
                                                                         CheckIfConnection);
 
-                    if( it != req.headers.end() )
+                    if( it != headers.end() )
                     {
                         if( strcasecmp(it->second.c_str(), "Keep-Alive") == 0 )
                         {
@@ -558,7 +561,13 @@ namespace Simple {
                     else if( contentSize == 0 )
                     {
                         if( input == '\n')
+                        {
+                            for (auto& [name, value] : headers)
+                                req.headers[name] = std::move(value);
+                            for (auto& [name, value] : params)
+                                req.params[name] = std::move(value);
                             return ParsingCompleted;
+                        }
                         else
                             return ParsingError;
                     }
@@ -569,6 +578,13 @@ namespace Simple {
                     break;
                 }
                 case Post:
+                    if (true)
+                    {
+                        for (auto& [name, value] : headers)
+                            req.headers[name] = std::move(value);
+                        for (auto& [name, value] : params)
+                            req.params[name] = std::move(value);
+                    }
                     return ParsingCompleted;
                     break;
                 default:
