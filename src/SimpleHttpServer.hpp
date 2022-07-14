@@ -13,8 +13,10 @@
 
 namespace Simple {
     namespace Details { class RequestSession; }
+
     typedef std::unordered_map<std::string, std::string> Headers;
     typedef std::unordered_map<std::string, std::string> Params;
+
     struct Request
     {
         std::string method;
@@ -56,7 +58,9 @@ namespace Simple {
     };
 
     typedef std::function<void(const Request&, Response&)> CallbackHandler;
+    typedef std::function<void(const Request&, Response&, std::function<void()>)> CallbackMiddlewareHandler;
     typedef std::pair<std::string, CallbackHandler> Handler;
+    typedef std::pair<std::string, CallbackMiddlewareHandler> MiddlewareHandler;
 
     class HttpServer
     {
@@ -69,7 +73,6 @@ namespace Simple {
         void Put(const std::string& pathPattern, CallbackHandler requestHandler);
         void Delete(const std::string& pathPattern, CallbackHandler requestHandler);
 
-
     private:
         void DoAccept();
 
@@ -81,6 +84,7 @@ namespace Simple {
         std::vector<Handler> m_PostHandlers;
         std::vector<Handler> m_PutHandlers;
         std::vector<Handler> m_DeleteHandlers;
+        std::vector<MiddlewareHandler> m_Middlewares;
         std::shared_ptr<std::thread> m_ContextThread;
 
         friend class Details::RequestSession;
